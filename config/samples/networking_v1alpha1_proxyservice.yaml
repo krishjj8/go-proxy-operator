@@ -1,9 +1,15 @@
 apiVersion: networking.krish.platform/v1alpha1
 kind: ProxyService
 metadata:
+  name: edge-gateway
+  namespace: default
   labels:
     app.kubernetes.io/name: go-proxy-operator
     app.kubernetes.io/managed-by: kustomize
-  name: proxyservice-sample
 spec:
-  # TODO(user): Add fields here
+  replicas: 2
+  listenPort: 8080
+  rateLimit: 25
+  upstreams:
+    - "payment-svc-stable:8001"
+    - "payment-svc-canary:8001"
