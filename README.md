@@ -1,151 +1,187 @@
 # go-proxy-operator
 
-A Kubernetes Operator that automates the deployment, configuration, and lifecycle management of **go-reverse-proxy** instances. Built with **Kubebuilder** and **controller-runtime**, it acts as the control plane for managing Layer 7 reverse proxy data planes.
+![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white)
+![Kubebuilder](https://img.shields.io/badge/Kubebuilder-v4-326ce5?style=flat&logo=kubernetes)
+![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat)
+
+A Kubernetes Operator built with **Kubebuilder** and **controller-runtime** that manages the full lifecycle of [go-reverse-proxy](https://github.com/krishjj8/go-reverse-proxy) instances. Submit a single `ProxyService` custom resource; the operator provisions the Deployment, Service, and ConfigMap — and continuously heals any configuration drift.
 
 ---
 
-# Features
+## How it works
 
-* **Declarative Management** using the `ProxyService` Custom Resource.
-* **Automatic Configuration** through generated ConfigMaps.
-* **Self-Healing** by continuously reconciling Deployments, Services, and ConfigMaps.
-* **Separation of Concerns** where the operator manages infrastructure while proxy instances handle traffic.
+The operator implements the Kubernetes control-plane / data-plane split cleanly:
 
----
-
-# Architecture
+- **Control plane (this operator):** watches `ProxyService` resources and reconciles the required Kubernetes objects. It is completely unaware of live HTTP traffic.
+- **Data plane (go-reverse-proxy):** runs independently, processing requests, routing via Host header, enforcing the circuit breaker and rate limiter. It has no knowledge of the operator loop.
 
 ```
-ProxyService (CRD)
-        │
-        ▼
-go-proxy-operator (Controller)
-        │
-        ├── Deployment
-        ├── Service
-        └── ConfigMap
-                │
-                ▼
-        go-reverse-proxy Pods
+ProxyService CR  ──▶  go-proxy-operator (reconciler)
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+          Deployment       Service        ConfigMap
+              │
+              ▼
+      go-reverse-proxy pods
+      (round-robin, circuit breaker, rate limiter)
 ```
 
-The operator watches `ProxyService` resources and automatically creates or updates the required Kubernetes objects. Any manual changes to managed resources are reverted during reconciliation.
+Any manual edit to a managed resource (Deployment, Service, ConfigMap) is reverted on the next reconcile loop — the CR is the single source of truth.
 
 ---
 
-# Prerequisites
+## The ProxyService resource
 
-* Go 1.24+
-* Docker or Podman
-* Kubernetes cluster (Kind or Minikube)
-* kubectl
-* Kustomize
+```yaml
+apiVersion: networking.krish.platform/v1alpha1
+kind: ProxyService
+metadata:
+  name: edge-gateway
+  namespace: default
+  labels:
+    app.kubernetes.io/name: go-proxy-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 2
+  listenPort: 8080
+  rateLimit: 25
+  upstreams:
+    - "payment-svc-stable:8001"
+    - "payment-svc-canary:8001"
+```
+
+Applying this one file causes the operator to create and own:
+- a `Deployment` running the proxy image
+- a `ClusterIP` `Service` with a dynamically allocated virtual IP (never hardcoded)
+- a `ConfigMap` containing the generated `config.yaml`
+
+All three resources carry the label `proxy-instance: edge-gateway`, so you can query them together:
+
+```bash
+kubectl get deployments,services,configmaps -l proxy-instance=edge-gateway
+```
 
 ---
 
-# Local Development
+## Local development
 
-### Generate manifests
-
-```sh
+```bash
+# Generate deepcopy hooks and CRD manifests from API types
 make manifests
-```
 
-### Install the CRD
+# Install the CRDs into the cluster
+make install
 
-```sh
-kubectl apply -f config/crd/bases/
-```
-
-### Verify installation
-
-```sh
+# Verify
 kubectl get crds | grep krish
-```
 
-### Run the controller locally
-
-```sh
+# Run the controller loop locally (watches live cluster events)
 make run
 ```
 
 ---
 
-# Deploy the Operator
+## Full demo (two-terminal split)
 
-### Build and push the image
-
-```sh
-make docker-build docker-push IMG=<your-registry>/go-proxy-operator:v1.0.0
+**Terminal 1 — operator**
+```bash
+cd ~/Documents/go-proxy-operator
+make manifests && make install && make run
 ```
 
-### Deploy to Kubernetes
+**Terminal 2 — data plane + traffic**
+```bash
+# Build and load the proxy image
+cd ~/Documents/go-reverse-proxy
+docker build -t go-reverse-proxy:latest .
+kind load docker-image go-reverse-proxy:latest
 
-```sh
-make deploy IMG=<your-registry>/go-proxy-operator:v1.0.0
-```
-
----
-
-# Create a ProxyService
-
-```sh
+# Apply backends and the ProxyService CR
+kubectl apply -f backends.yaml
+cd ~/Documents/go-proxy-operator
 kubectl apply -f config/samples/networking_v1alpha1_proxyservice.yaml
-```
 
-The operator will automatically create and manage the required Deployment, Service, and ConfigMap.
+# Confirm the operator created all three child resources
+kubectl get deployments,services,configmaps -l proxy-instance=edge-gateway
+
+# Open the tunnel
+kubectl port-forward svc/edge-gateway-service 8080:8080
+
+# Route a request through the proxy
+curl -H "Host: api.proxy" http://localhost:8080/
+```
 
 ---
 
-# Build a Single Installer
+## Deploy to a cluster
 
-Generate a combined installation manifest:
+```bash
+# Build and push the operator image
+make docker-build docker-push IMG=<your-registry>/go-proxy-operator:v1.0.0
 
-```sh
+# Deploy CRDs + controller
+make deploy IMG=<your-registry>/go-proxy-operator:v1.0.0
+
+# Or generate a single combined manifest
 make build-installer IMG=<your-registry>/go-proxy-operator:v1.0.0
-```
-
-Install it using:
-
-```sh
 kubectl apply -f dist/install.yaml
 ```
 
 ---
 
-# Project Structure
+## Key implementation notes
+
+**Top-level ObjectMeta labels**
+The label `proxy-instance: <name>` is set on the `ObjectMeta` of the Deployment, Service, and ConfigMap — not just inside the pod template or selector. Without this, `kubectl get -l proxy-instance=...` returns nothing, because the query matches resource metadata, not pod specs.
+
+**Dynamic ClusterIP allocation**
+The Service spec sets `Type: corev1.ServiceTypeClusterIP` but leaves the `ClusterIP` field empty. The API server assigns an available address from the cluster's Service CIDR at creation time. Hardcoding a static IP risks collisions and breaks portability across clusters.
+
+---
+
+## Project layout
 
 ```
-api/
-├── v1alpha1/
-│   └── proxyservice_types.go
-
-internal/
-└── controller/
-    └── proxyservice_controller.go
-
-config/
-├── crd/
-├── manager/
-├── rbac/
-└── samples/
+go-proxy-operator/
+├── api/
+│   └── v1alpha1/
+│       └── proxyservice_types.go      # CRD schema and spec/status types
+├── internal/
+│   └── controller/
+│       └── proxyservice_controller.go # reconcile loop + child resource factories
+├── config/
+│   ├── crd/                           # generated CRD manifests
+│   ├── manager/                       # controller-manager deployment
+│   ├── rbac/                          # ClusterRole / binding
+│   └── samples/                       # example ProxyService CR
+└── Makefile
 ```
 
 ---
 
-# Contributing
+## Contributing
 
-1. Update the API in `api/v1alpha1/proxyservice_types.go`.
-2. Modify reconciliation logic in `internal/controller/proxyservice_controller.go`.
-3. Regenerate manifests:
+1. Edit the API types in `api/v1alpha1/proxyservice_types.go`.
+2. Update reconciliation logic in `internal/controller/proxyservice_controller.go`.
+3. Regenerate manifests and tidy deps:
 
-```sh
+```bash
 make manifests
 go mod tidy
 ```
 
 ---
 
-# License
+## Prerequisites
 
-Licensed under the Apache License 2.0.
+- Go 1.26+
+- Docker or Podman
+- kind cluster with Cilium installed (see [go-reverse-proxy](https://github.com/krishjj8/go-reverse-proxy) setup)
+- kubectl + Kustomize
+
+---
+
+## License
+
+Apache 2.0
