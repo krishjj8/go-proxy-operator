@@ -18,6 +18,7 @@ import (
 	networkingv1alpha1 "github.com/krishjj8/go-proxy-operator/api/v1alpha1"
 )
 
+// ProxyServiceReconciler reconciles a ProxyService object
 type ProxyServiceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -32,6 +33,7 @@ type ProxyServiceReconciler struct {
 func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// 1. Fetch the live ProxyService custom resource instance
 	proxyService := &networkingv1alpha1.ProxyService{}
 	err := r.Get(ctx, req.NamespacedName, proxyService)
 	if err != nil {
@@ -45,6 +47,7 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	logger.Info("Reconciling ProxyService", "Name", proxyService.Name, "Namespace", proxyService.Namespace)
 
+	// 2. Handle the ConfigMap infrastructure lifecycle
 	existingConfigMap := &corev1.ConfigMap{}
 	configMapName := proxyService.Name + "-config"
 	err = r.Get(ctx, client.ObjectKey{Namespace: proxyService.Namespace, Name: configMapName}, existingConfigMap)
@@ -68,6 +71,7 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	// 3. Handle the Deployment infrastructure lifecycle
 	existingDeployment := &appsv1.Deployment{}
 	deploymentName := proxyService.Name + "-deployment"
 	err = r.Get(ctx, client.ObjectKey{Namespace: proxyService.Namespace, Name: deploymentName}, existingDeployment)
@@ -91,6 +95,7 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	// 4. SRE SCALE CONTROL: Verify the deployment replica count matches the CRD Spec
 	desiredReplicas := proxyService.Spec.Replicas
 	if *existingDeployment.Spec.Replicas != desiredReplicas {
 		logger.Info("Scale mismatch detected. Syncing deployment topology",
@@ -105,6 +110,7 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// 5. Handle the Cluster Service Load Balancer lifecycle
 	existingService := &corev1.Service{}
 	serviceName := proxyService.Name + "-service"
 	err = r.Get(ctx, client.ObjectKey{Namespace: proxyService.Namespace, Name: serviceName}, existingService)
@@ -131,10 +137,10 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
+// configMapForProxy translates CRD parameters into a formatted config.yaml volume mount
 func (r *ProxyServiceReconciler) configMapForProxy(proxy *networkingv1alpha1.ProxyService) (*corev1.ConfigMap, error) {
 	var formattedUpstreams []string
 	for _, u := range proxy.Spec.Upstreams {
-
 		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 			formattedUpstreams = append(formattedUpstreams, fmt.Sprintf("      - \"http://%s\"", u))
 		} else {
@@ -155,6 +161,7 @@ routes:
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      proxy.Name + "-config",
 			Namespace: proxy.Namespace,
+			Labels:    map[string]string{"proxy-instance": proxy.Name}, // 👈 ALIGNMENT: Adds tracking label to Metadata
 		},
 		Data: map[string]string{
 			"config.yaml": proxyConfigData,
@@ -167,6 +174,7 @@ routes:
 	return cm, nil
 }
 
+// deploymentForProxy constructs the target runtime configuration for our proxy fleet containers
 func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.ProxyService) (*appsv1.Deployment, error) {
 	replicas := proxy.Spec.Replicas
 
@@ -174,6 +182,7 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      proxy.Name + "-deployment",
 			Namespace: proxy.Namespace,
+			Labels:    map[string]string{"proxy-instance": proxy.Name}, // 👈 ALIGNMENT: Adds tracking label to Metadata
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -184,7 +193,7 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"proxy-instance": proxy.Name,
-						"app":            "go-reverse-proxy",
+						"app":            "go-reverse-proxy", // Matches eBPF CiliumNetworkPolicy
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -199,7 +208,7 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config-volume",
 							MountPath: "/config.yaml",
-							SubPath:   "config.yaml",
+							SubPath:   "config.yaml", // Prevents masking root directories in distroless image
 						}},
 					}},
 					Volumes: []corev1.Volume{{
@@ -223,11 +232,13 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 	return dep, nil
 }
 
+// serviceForProxy constructs the ClusterIP service mapping network streams to your proxy pods
 func (r *ProxyServiceReconciler) serviceForProxy(proxy *networkingv1alpha1.ProxyService) (*corev1.Service, error) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      proxy.Name + "-service",
 			Namespace: proxy.Namespace,
+			Labels:    map[string]string{"proxy-instance": proxy.Name}, // 👈 ALIGNMENT: Adds tracking label to Metadata
 		},
 		Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
