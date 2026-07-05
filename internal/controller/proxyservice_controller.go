@@ -132,11 +132,24 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 func (r *ProxyServiceReconciler) configMapForProxy(proxy *networkingv1alpha1.ProxyService) (*corev1.ConfigMap, error) {
-	formattedUpstreams := fmt.Sprintf("[\"%s\"]", strings.Join(proxy.Spec.Upstreams, "\",\""))
-	proxyConfigData := fmt.Sprintf(`listen_port: %d
-rate_limit: %d
-upstreams: %s
-`, proxy.Spec.ListenPort, proxy.Spec.RateLimit, formattedUpstreams)
+	var formattedUpstreams []string
+	for _, u := range proxy.Spec.Upstreams {
+
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			formattedUpstreams = append(formattedUpstreams, fmt.Sprintf("      - \"http://%s\"", u))
+		} else {
+			formattedUpstreams = append(formattedUpstreams, fmt.Sprintf("      - \"%s\"", u))
+		}
+	}
+	upstreamsBlock := strings.Join(formattedUpstreams, "\n")
+
+	proxyConfigData := fmt.Sprintf(`server:
+  listen_address: ":%d"
+routes:
+  api.proxy:
+    upstreams:
+%s
+`, proxy.Spec.ListenPort, upstreamsBlock)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -165,11 +178,14 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": proxy.Name},
+				MatchLabels: map[string]string{"proxy-instance": proxy.Name},
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": proxy.Name},
+					Labels: map[string]string{
+						"proxy-instance": proxy.Name,
+						"app":            "go-reverse-proxy",
+					},
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
@@ -177,12 +193,13 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 						Image:           "go-reverse-proxy:latest",
 						ImagePullPolicy: corev1.PullNever,
 						Ports: []corev1.ContainerPort{
-							{ContainerPort: proxy.Spec.ListenPort, Name: "data-plane"},
-							{ContainerPort: 9090, Name: "control-plane"},
+							{ContainerPort: proxy.Spec.ListenPort, Name: "public-traffic"},
+							{ContainerPort: 9090, Name: "admin-control"},
 						},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config-volume",
-							MountPath: "/app/config",
+							MountPath: "/config.yaml",
+							SubPath:   "config.yaml",
 						}},
 					}},
 					Volumes: []corev1.Volume{{
@@ -215,18 +232,18 @@ func (r *ProxyServiceReconciler) serviceForProxy(proxy *networkingv1alpha1.Proxy
 		Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
 			Selector: map[string]string{
-				"app": proxy.Name,
+				"proxy-instance": proxy.Name,
 			},
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "traffic-ingress",
+					Name:       "web-ingress",
 					Port:       proxy.Spec.ListenPort,
-					TargetPort: intstr.FromString("data-plane"),
+					TargetPort: intstr.FromString("public-traffic"),
 				},
 				{
-					Name:       "admin-ingress",
+					Name:       "metrics-scrape",
 					Port:       9090,
-					TargetPort: intstr.FromString("control-plane"),
+					TargetPort: intstr.FromString("admin-control"),
 				},
 			},
 		},
@@ -235,7 +252,6 @@ func (r *ProxyServiceReconciler) serviceForProxy(proxy *networkingv1alpha1.Proxy
 	if err := ctrl.SetControllerReference(proxy, svc, r.Scheme); err != nil {
 		return nil, err
 	}
-
 	return svc, nil
 }
 
