@@ -114,6 +114,35 @@ curl -H "Host: api.proxy" http://localhost:8080/
 
 ---
 
+## Experiments
+
+### Experiment 1 — Declarative scaling via GitOps loop
+
+**What it tests:** Kubernetes API extensibility and control-plane reconciliation.
+
+Edit the `ProxyService` CR, bump `replicas` from `2` to `5`, and apply:
+
+```bash
+kubectl patch proxyservice edge-gateway --type=merge -p '{"spec":{"replicas":5}}'
+# or edit config/samples/networking_v1alpha1_proxyservice.yaml and kubectl apply
+```
+
+The reconciler detects the spec delta at line `desiredReplicas != *existingDeployment.Spec.Replicas`, patches the Deployment, and three new proxy pods come up within seconds — no manual `kubectl scale` needed.
+
+```bash
+# Watch the pods appear in real time
+kubectl get pods -w -l proxy-instance=edge-gateway
+```
+
+| Before | After |
+|---|---|
+| 2 pods Running | 5 pods Running (~47 s to Ready) |
+
+![Operator scaling — pod watch output](images/exp1.png)
+![Operator scaling — pod detail](images/exp1-1.png)
+
+---
+
 ## Deploy to a cluster
 
 ```bash
