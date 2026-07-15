@@ -2,7 +2,7 @@
 
 ![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white)
 ![Kubebuilder](https://img.shields.io/badge/Kubebuilder-v4-326ce5?style=flat&logo=kubernetes)
-![CI/CD Control Plane](https://github.com/krishjj8/go-proxy-operator/.github/workflows/cicd.yml/badge.svg)
+![CI/CD Control Plane](https://github.com/krishjj8/go-proxy-operator/actions/workflows/cicd.yaml/badge.svg)
 ![Registry](https://img.shields.io/badge/Registry-GHCR.io-orange?style=flat&logo=github)
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat)
 
