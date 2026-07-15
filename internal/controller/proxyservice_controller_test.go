@@ -54,6 +54,14 @@ var _ = Describe("ProxyService Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
+					Spec: networkingv1alpha1.ProxyServiceSpec{
+						ListenPort: 8080,
+						Replicas:   2,
+						Upstreams: []string{
+							"http://payment-svc-stable:8001",
+							"http://payment-svc-canary:8001",
+						},
+					},
 					// TODO(user): Specify other spec details if needed.
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
