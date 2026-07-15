@@ -2,7 +2,9 @@
 
 ![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white)
 ![Kubebuilder](https://img.shields.io/badge/Kubebuilder-v4-326ce5?style=flat&logo=kubernetes)
-![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat)
+![CI/CD Control Plane](https://github.com/krishjj8/go-proxy-operator/actions/workflows/operator-ci.yml/badge.svg)
+![Registry](https://img.shields.io/badge/Registry-GHCR.io-orange?style=flat&logo=github)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=flat)
 
 A Kubernetes Operator built with **Kubebuilder** and **controller-runtime** that manages the full lifecycle of [go-reverse-proxy](https://github.com/krishjj8/go-reverse-proxy) instances. Submit a single `ProxyService` custom resource; the operator provisions the Deployment, Service, and ConfigMap — and continuously heals any configuration drift.
 
@@ -143,6 +145,85 @@ kubectl get pods -w -l proxy-instance=edge-gateway
 
 ---
 
+## CI/CD
+
+GitHub Actions on every push to `main` and every pull request. Uses `setup-envtest` to run controller tests against an isolated API server, then pushes the operator image to `ghcr.io`:
+
+```yaml
+name: Operator Control Plane Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/go-proxy-operator
+
+jobs:
+  validate-and-build-operator:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.26'
+        cache: true
+
+    - name: Verify dependencies
+      run: go mod download && go mod verify
+
+    - name: Check formatting
+      run: |
+        if [ -n "$(gofmt -l .)" ]; then
+          echo "Files not formatted cleanly:"
+          gofmt -l .
+          exit 1
+        fi
+
+    - name: Run controller tests
+      run: |
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        KUBEBUILDER_ASSETS=$(setup-envtest use 1.36.x -p path) go test -v ./...
+
+    - uses: docker/setup-buildx-action@v3
+
+    - uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract image metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=sha,format=short
+          latest
+
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+```
+
+---
+
 ## Deploy to a cluster
 
 ```bash
@@ -169,6 +250,24 @@ The Service spec sets `Type: corev1.ServiceTypeClusterIP` but leaves the `Cluste
 
 ---
 
+## Cluster inspection
+
+After deploying, audit the operator's dedicated namespace:
+
+```bash
+# Confirm the namespace exists
+kubectl get ns | grep go-proxy-operator-system
+
+# Check the manager pod is running
+kubectl get pods -n go-proxy-operator-system
+
+# Stream live reconciliation logs
+kubectl logs deployment/go-proxy-operator-controller-manager \
+  -n go-proxy-operator-system -c manager --tail=50
+```
+
+---
+
 ## Project layout
 
 ```
@@ -184,6 +283,7 @@ go-proxy-operator/
 │   ├── manager/                       # controller-manager deployment
 │   ├── rbac/                          # ClusterRole / binding
 │   └── samples/                       # example ProxyService CR
+├── images/                            # experiment telemetry screenshots (exp1)
 └── Makefile
 ```
 
