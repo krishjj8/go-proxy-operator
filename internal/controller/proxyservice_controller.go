@@ -18,6 +18,7 @@ import (
 	networkingv1alpha1 "github.com/krishjj8/go-proxy-operator/api/v1alpha1"
 )
 
+const proxyInstanceLabel = "proxy-instance"
 
 type ProxyServiceReconciler struct {
 	client.Client
@@ -33,7 +34,6 @@ type ProxyServiceReconciler struct {
 func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	
 	proxyService := &networkingv1alpha1.ProxyService{}
 	err := r.Get(ctx, req.NamespacedName, proxyService)
 	if err != nil {
@@ -47,7 +47,6 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	logger.Info("Reconciling ProxyService", "Name", proxyService.Name, "Namespace", proxyService.Namespace)
 
-	
 	existingConfigMap := &corev1.ConfigMap{}
 	configMapName := proxyService.Name + "-config"
 	err = r.Get(ctx, client.ObjectKey{Namespace: proxyService.Namespace, Name: configMapName}, existingConfigMap)
@@ -71,7 +70,6 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	
 	existingDeployment := &appsv1.Deployment{}
 	deploymentName := proxyService.Name + "-deployment"
 	err = r.Get(ctx, client.ObjectKey{Namespace: proxyService.Namespace, Name: deploymentName}, existingDeployment)
@@ -95,7 +93,6 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	
 	desiredReplicas := proxyService.Spec.Replicas
 	if *existingDeployment.Spec.Replicas != desiredReplicas {
 		logger.Info("Scale mismatch detected. Syncing deployment topology",
@@ -110,7 +107,6 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	
 	existingService := &corev1.Service{}
 	serviceName := proxyService.Name + "-service"
 	err = r.Get(ctx, client.ObjectKey{Namespace: proxyService.Namespace, Name: serviceName}, existingService)
@@ -137,7 +133,6 @@ func (r *ProxyServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-
 func (r *ProxyServiceReconciler) configMapForProxy(proxy *networkingv1alpha1.ProxyService) (*corev1.ConfigMap, error) {
 	var formattedUpstreams []string
 	for _, u := range proxy.Spec.Upstreams {
@@ -161,7 +156,7 @@ routes:
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      proxy.Name + "-config",
 			Namespace: proxy.Namespace,
-			Labels:    map[string]string{"proxy-instance": proxy.Name}, 
+			Labels:    map[string]string{proxyInstanceLabel: proxy.Name},
 		},
 		Data: map[string]string{
 			"config.yaml": proxyConfigData,
@@ -174,7 +169,6 @@ routes:
 	return cm, nil
 }
 
-
 func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.ProxyService) (*appsv1.Deployment, error) {
 	replicas := proxy.Spec.Replicas
 
@@ -182,18 +176,18 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      proxy.Name + "-deployment",
 			Namespace: proxy.Namespace,
-			Labels:    map[string]string{"proxy-instance": proxy.Name}, 
+			Labels:    map[string]string{proxyInstanceLabel: proxy.Name},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"proxy-instance": proxy.Name},
+				MatchLabels: map[string]string{proxyInstanceLabel: proxy.Name},
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"proxy-instance": proxy.Name,
-						"app":            "go-reverse-proxy", 
+						proxyInstanceLabel: proxy.Name,
+						"app":              "go-reverse-proxy",
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -208,7 +202,7 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "config-volume",
 							MountPath: "/config.yaml",
-							SubPath:   "config.yaml", 
+							SubPath:   "config.yaml",
 						}},
 					}},
 					Volumes: []corev1.Volume{{
@@ -232,18 +226,17 @@ func (r *ProxyServiceReconciler) deploymentForProxy(proxy *networkingv1alpha1.Pr
 	return dep, nil
 }
 
-
 func (r *ProxyServiceReconciler) serviceForProxy(proxy *networkingv1alpha1.ProxyService) (*corev1.Service, error) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      proxy.Name + "-service",
 			Namespace: proxy.Namespace,
-			Labels:    map[string]string{"proxy-instance": proxy.Name}, 
+			Labels:    map[string]string{proxyInstanceLabel: proxy.Name},
 		},
 		Spec: corev1.ServiceSpec{
 			Type: corev1.ServiceTypeClusterIP,
 			Selector: map[string]string{
-				"proxy-instance": proxy.Name,
+				proxyInstanceLabel: proxy.Name,
 			},
 			Ports: []corev1.ServicePort{
 				{
