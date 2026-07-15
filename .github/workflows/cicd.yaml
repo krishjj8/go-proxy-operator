@@ -42,7 +42,9 @@ jobs:
 
     
     - name: Run Operator Controller Tests
-      run: go test -v ./...
+      run: |
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        KUBEBUILDER_ASSETS=$(setup-envtest use 1.36.x -p path) go test -v ./...
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
